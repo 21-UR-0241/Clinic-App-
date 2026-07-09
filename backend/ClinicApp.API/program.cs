@@ -12,6 +12,22 @@ using BCrypt.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ✅ CORRECT ORDER: Add user secrets FIRST, then read configuration
+if (builder.Environment.IsDevelopment())
+{
+    builder.Configuration.AddUserSecrets<Program>();
+}
+
+// ✅ NOW read the secret (after user secrets are loaded)
+var secret = builder.Configuration["JwtSettings:Secret"];
+if (string.IsNullOrEmpty(secret))
+{
+    throw new InvalidOperationException(
+        "JWT Secret is not configured. Set it using:\n" +
+        "  dotnet user-secrets set \"JwtSettings:Secret\" \"YourSecretKey\"\n" +
+        "  or set environment variable JwtSettings__Secret");
+}
+
 // Add services
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -46,7 +62,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // JWT Authentication
-var key = Encoding.ASCII.GetBytes(builder.Configuration["JwtSettings:Secret"]!);
+var key = Encoding.ASCII.GetBytes(secret);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -77,7 +93,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
+    db.Database.Migrate();
 }
 
 // Middleware
@@ -113,7 +129,8 @@ app.MapPost("/api/auth/login", async (LoginDto login, AppDbContext db, IConfigur
     var token = tokenHandler.CreateToken(tokenDescriptor);
     var refreshToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
-    user.RefreshToken = refreshToken;
+    // Hash the refresh token before storing
+    user.RefreshTokenHash = BCrypt.Net.BCrypt.HashPassword(refreshToken);
     user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(7);
     await db.SaveChangesAsync();
 
@@ -126,12 +143,50 @@ app.MapPost("/api/auth/logout", async (HttpContext context, AppDbContext db) =>
     var user = await db.Users.FindAsync(userId);
     if (user != null)
     {
-        user.RefreshToken = null;
+        user.RefreshTokenHash = null;
         user.RefreshTokenExpiryTime = null;
         await db.SaveChangesAsync();
     }
     return Results.Ok();
 }).RequireAuthorization();
+
+app.MapPost("/api/auth/refresh", async (RefreshDto request, AppDbContext db, IConfiguration config) =>
+{
+    // Find user by refresh token hash
+    var users = await db.Users.ToListAsync();
+    var user = users.FirstOrDefault(u => u.RefreshTokenHash != null && BCrypt.Net.BCrypt.Verify(request.RefreshToken, u.RefreshTokenHash));
+
+    if (user == null || user.RefreshTokenExpiryTime == null || user.RefreshTokenExpiryTime < DateTime.UtcNow)
+        return Results.Unauthorized();
+
+    var tokenHandler = new JwtSecurityTokenHandler();
+    var key = Encoding.ASCII.GetBytes(config["JwtSettings:Secret"]!);
+    var tokenDescriptor = new SecurityTokenDescriptor
+    {
+        Subject = new ClaimsIdentity(new[] {
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(ClaimTypes.Email, user.Email)
+        }),
+        Expires = DateTime.UtcNow.AddMinutes(60),
+        Issuer = config["JwtSettings:Issuer"],
+        Audience = config["JwtSettings:Audience"],
+        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+    };
+    var newToken = tokenHandler.CreateToken(tokenDescriptor);
+    var newRefreshToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+    // Rotate the refresh token (hash it before storing)
+    user.RefreshTokenHash = BCrypt.Net.BCrypt.HashPassword(newRefreshToken);
+    user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(7);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new AuthResponse
+    {
+        Token = tokenHandler.WriteToken(newToken),
+        RefreshToken = newRefreshToken,
+        Email = user.Email
+    });
+});
 
 // Patient Endpoints
 app.MapGet("/api/patients", async (AppDbContext db) =>
@@ -167,13 +222,29 @@ app.MapGet("/api/patients/{id}", async (int id, AppDbContext db) =>
 
 app.MapPost("/api/patients", async (PatientDto patientDto, AppDbContext db) =>
 {
+    // Server-side validation
+    if (string.IsNullOrWhiteSpace(patientDto.Name) || patientDto.Name.Length < 2)
+        return Results.BadRequest(new { error = "Name is required and must be at least 2 characters" });
+    
+    if (patientDto.BirthDate == default || patientDto.BirthDate > DateTime.UtcNow)
+        return Results.BadRequest(new { error = "Valid birth date is required" });
+    
+    if (!new[] { "Male", "Female", "Other" }.Contains(patientDto.Gender))
+        return Results.BadRequest(new { error = "Gender must be Male, Female, or Other" });
+    
+    if (string.IsNullOrWhiteSpace(patientDto.ContactNumber) || patientDto.ContactNumber.Length < 10)
+        return Results.BadRequest(new { error = "Valid contact number is required (minimum 10 digits)" });
+    
+    if (string.IsNullOrWhiteSpace(patientDto.Address) || patientDto.Address.Length < 5)
+        return Results.BadRequest(new { error = "Address is required and must be at least 5 characters" });
+
     var patient = new Patient
     {
-        Name = patientDto.Name,
+        Name = patientDto.Name.Trim(),
         BirthDate = patientDto.BirthDate,
         Gender = patientDto.Gender,
-        ContactNumber = patientDto.ContactNumber,
-        Address = patientDto.Address,
+        ContactNumber = patientDto.ContactNumber.Trim(),
+        Address = patientDto.Address.Trim(),
         CreatedAt = DateTime.UtcNow
     };
     db.Patients.Add(patient);
@@ -194,11 +265,27 @@ app.MapPut("/api/patients/{id}", async (int id, PatientDto patientDto, AppDbCont
     var patient = await db.Patients.FindAsync(id);
     if (patient == null) return Results.NotFound();
     
-    patient.Name = patientDto.Name;
+    // Server-side validation
+    if (string.IsNullOrWhiteSpace(patientDto.Name) || patientDto.Name.Length < 2)
+        return Results.BadRequest(new { error = "Name is required and must be at least 2 characters" });
+    
+    if (patientDto.BirthDate == default || patientDto.BirthDate > DateTime.UtcNow)
+        return Results.BadRequest(new { error = "Valid birth date is required" });
+    
+    if (!new[] { "Male", "Female", "Other" }.Contains(patientDto.Gender))
+        return Results.BadRequest(new { error = "Gender must be Male, Female, or Other" });
+    
+    if (string.IsNullOrWhiteSpace(patientDto.ContactNumber) || patientDto.ContactNumber.Length < 10)
+        return Results.BadRequest(new { error = "Valid contact number is required (minimum 10 digits)" });
+    
+    if (string.IsNullOrWhiteSpace(patientDto.Address) || patientDto.Address.Length < 5)
+        return Results.BadRequest(new { error = "Address is required and must be at least 5 characters" });
+
+    patient.Name = patientDto.Name.Trim();
     patient.BirthDate = patientDto.BirthDate;
     patient.Gender = patientDto.Gender;
-    patient.ContactNumber = patientDto.ContactNumber;
-    patient.Address = patientDto.Address;
+    patient.ContactNumber = patientDto.ContactNumber.Trim();
+    patient.Address = patientDto.Address.Trim();
     await db.SaveChangesAsync();
     return Results.Ok(patientDto);
 }).RequireAuthorization();
@@ -232,7 +319,7 @@ public class User
     public int Id { get; set; }
     public string Email { get; set; } = string.Empty;
     public string PasswordHash { get; set; } = string.Empty;
-    public string? RefreshToken { get; set; }
+    public string? RefreshTokenHash { get; set; }  // Now hashed instead of plaintext
     public DateTime? RefreshTokenExpiryTime { get; set; }
 }
 
@@ -248,11 +335,36 @@ public class AppDbContext : DbContext
         {
             Id = 1,
             Email = "admin@clinic.com",
-            PasswordHash = BCrypt.Net.BCrypt.HashPassword("Admin@123")
+            PasswordHash = "$2b$11$n1sHT.ktV4Z/JwO5zfANIOsIj/kXCGm2QNt1xrGmyZCYoIgrXQUBK"
         });
     }
 }
 
 public class LoginDto { public string Email { get; set; } = string.Empty; public string Password { get; set; } = string.Empty; }
+public class RefreshDto { public string Token { get; set; } = string.Empty; public string RefreshToken { get; set; } = string.Empty; }
 public class AuthResponse { public string Token { get; set; } = string.Empty; public string RefreshToken { get; set; } = string.Empty; public string Email { get; set; } = string.Empty; }
-public class PatientDto { public int Id { get; set; } public string Name { get; set; } = string.Empty; public DateTime BirthDate { get; set; } public string Gender { get; set; } = string.Empty; public string ContactNumber { get; set; } = string.Empty; public string Address { get; set; } = string.Empty; }
+
+// DTO with validation attributes
+public class PatientDto 
+{ 
+    public int Id { get; set; } 
+    
+    [Required(ErrorMessage = "Name is required")]
+    [StringLength(100, MinimumLength = 2, ErrorMessage = "Name must be between 2 and 100 characters")]
+    public string Name { get; set; } = string.Empty; 
+    
+    [Required(ErrorMessage = "Birth date is required")]
+    public DateTime BirthDate { get; set; } 
+    
+    [Required(ErrorMessage = "Gender is required")]
+    [RegularExpression("^(Male|Female|Other)$", ErrorMessage = "Gender must be Male, Female, or Other")]
+    public string Gender { get; set; } = string.Empty; 
+    
+    [Required(ErrorMessage = "Contact number is required")]
+    [Phone(ErrorMessage = "Invalid phone number format")]
+    public string ContactNumber { get; set; } = string.Empty; 
+    
+    [Required(ErrorMessage = "Address is required")]
+    [StringLength(200, MinimumLength = 5, ErrorMessage = "Address must be between 5 and 200 characters")]
+    public string Address { get; set; } = string.Empty; 
+}

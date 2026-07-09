@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import api from '../../lib/api';
 
@@ -13,23 +13,105 @@ interface Patient {
   address: string;
 }
 
+// Folder-tab accent colors, rotated by patient id — a nod to color-coded
+// tabs on real paper patient charts. Keeps rows scannable without
+// depending on gender/status for color meaning.
+const TAB_COLORS = [
+  { tab: '#0F6D66', tint: '#E4F1EF' }, // teal
+  { tab: '#B8823D', tint: '#F5EBDA' }, // amber
+  { tab: '#B5583F', tint: '#F4E3DD' }, // clay
+  { tab: '#3F5B70', tint: '#E1E9EE' }, // slate
+  { tab: '#6B4C6B', tint: '#EBE1EB' }, // plum
+  { tab: '#5C6B3F', tint: '#E7EBDC' }, // olive
+];
+
+function tabColorFor(id: number) {
+  return TAB_COLORS[id % TAB_COLORS.length];
+}
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/);
+  const first = parts[0]?.[0] ?? '';
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
+  return (first + last).toUpperCase();
+}
+
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+// Icon components — inline SVG, no new dependency required.
+function IconPlus(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" {...props}>
+      <path d="M10 4v12M4 10h12" />
+    </svg>
+  );
+}
+function IconSearch(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" {...props}>
+      <circle cx="9" cy="9" r="6" />
+      <path d="M17 17l-3.5-3.5" />
+    </svg>
+  );
+}
+function IconEdit(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M13.5 3.5a1.5 1.5 0 0 1 2 2L6 15l-3 1 1-3 9.5-9.5Z" />
+    </svg>
+  );
+}
+function IconTrash(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M4 6h12M8 6V4.5A1.5 1.5 0 0 1 9.5 3h1A1.5 1.5 0 0 1 12 4.5V6m2 0-.6 9a1.5 1.5 0 0 1-1.5 1.4H8.1A1.5 1.5 0 0 1 6.6 15L6 6" />
+    </svg>
+  );
+}
+function IconClose(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" {...props}>
+      <path d="M5 5l10 10M15 5 5 15" />
+    </svg>
+  );
+}
+function IconFolder(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth={1.4} {...props}>
+      <path d="M6 13.5h9.5l3 3.5H34a1 1 0 0 1 1 1V30a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V14.5a1 1 0 0 1 1-1Z" />
+    </svg>
+  );
+}
+function IconLogout(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M8 4H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3M13 14l4-4-4-4M17 10H8" />
+    </svg>
+  );
+}
+
 export default function PatientsPage() {
   const router = useRouter();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Patient | null>(null);
+  const [search, setSearch] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     birthDate: '',
     gender: '',
     contactNumber: '',
-    address: ''
+    address: '',
   });
 
   // Check authentication
   useEffect(() => {
-    const token = document.cookie.split('; ').find(row => row.startsWith('token='));
+    const token = document.cookie.split('; ').find((row) => row.startsWith('token='));
     if (!token) router.push('/login');
   }, [router]);
 
@@ -49,7 +131,30 @@ export default function PatientsPage() {
     loadPatients();
   }, []);
 
+  // Close the modal on Escape for keyboard users
+  useEffect(() => {
+    if (!showForm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') resetForm();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showForm]);
+
+  // Lock background scroll while the modal is open
+  useEffect(() => {
+    if (showForm) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = prevOverflow;
+      };
+    }
+  }, [showForm]);
+
   const handleLogout = async () => {
+    if (!window.confirm('Log out of your session?')) return;
+
     try {
       await api.post('/auth/logout');
     } catch (error) {
@@ -89,13 +194,13 @@ export default function PatientsPage() {
       birthDate: patient.birthDate.split('T')[0],
       gender: patient.gender,
       contactNumber: patient.contactNumber,
-      address: patient.address
+      address: patient.address,
     });
     setShowForm(true);
   };
 
   const handleDelete = async (id: number) => {
-    if (window.confirm('Delete this patient?')) {
+    if (window.confirm('Delete this patient? This cannot be undone.')) {
       try {
         await api.delete(`/patients/${id}`);
         await loadPatients();
@@ -105,139 +210,351 @@ export default function PatientsPage() {
     }
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  if (loading) {
-    return <div className="text-center py-8">Loading patients...</div>;
-  }
+  const filteredPatients = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return patients;
+    return patients.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.contactNumber.toLowerCase().includes(q)
+    );
+  }, [patients, search]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
-            <h1 className="text-xl font-semibold">🏥 Clinic Management</h1>
-            <button onClick={handleLogout} className="text-red-600 hover:text-red-800">
-              Logout
-            </button>
+    <div className="min-h-screen bg-[#F5F7F5] text-[#16302B]">
+      {/* ---------- Top bar ---------- */}
+      <nav className="sticky top-0 z-30 border-b border-[#DDE5E1] bg-[#F5F7F5]/90 backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-[#0F6D66] text-sm font-semibold text-white">
+              +
+            </span>
+            <span className="font-['Fraunces',_Georgia,_serif] text-lg font-medium tracking-tight">
+              Clinic App
+            </span>
           </div>
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-[#4B5D58] transition-colors hover:bg-[#EAEFEC] hover:text-[#16302B] motion-safe:transition"
+          >
+            <IconLogout className="h-4 w-4" />
+            Log out
+          </button>
         </div>
       </nav>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-gray-900">Patient Records</h2>
-          <button
-            onClick={() => { resetForm(); setShowForm(true); }}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-          >
-            Add New Patient
-          </button>
-        </div>
+      <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
+        {/* ---------- Page header ---------- */}
+        <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="font-['Fraunces',_Georgia,_serif] text-3xl font-medium tracking-tight text-[#16302B]">
+              Patient records
+            </h1>
+            <p className="mt-1 text-sm text-[#4B5D58]">
+              {loading
+                ? 'Loading records…'
+                : `${patients.length} ${patients.length === 1 ? 'patient' : 'patients'} registered`}
+            </p>
+          </div>
 
-        {showForm && (
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <h3 className="text-lg font-medium mb-4">{editing ? 'Edit Patient' : 'Add New Patient'}</h3>
-            <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A9C96]" />
               <input
                 type="text"
-                name="name"
-                value={formData.name}
-                onChange={handleChange}
-                placeholder="Full Name *"
-                className="w-full px-3 py-2 border rounded-md"
-                required
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search name or contact"
+                className="w-56 rounded-md border border-[#DDE5E1] bg-white py-2 pl-9 pr-3 text-sm text-[#16302B] placeholder:text-[#8A9C96] focus:border-[#0F6D66] focus:outline-none focus:ring-2 focus:ring-[#0F6D66]/20"
               />
-              <input
-                type="date"
-                name="birthDate"
-                value={formData.birthDate}
-                onChange={handleChange}
-                className="w-full px-3 py-2 border rounded-md"
-                required
-              />
-              <select
-                name="gender"
-                value={formData.gender}
-                onChange={handleChange}
-                className="w-full px-3 py-2 border rounded-md"
-                required
+            </div>
+            <button
+              onClick={() => {
+                resetForm();
+                setShowForm(true);
+              }}
+              className="flex shrink-0 items-center gap-1.5 rounded-md bg-[#0F6D66] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#0B534E] motion-safe:transition"
+            >
+              <IconPlus className="h-4 w-4" />
+              Add patient
+            </button>
+          </div>
+        </div>
+
+        {/* ---------- Table / list ---------- */}
+        <div className="overflow-hidden rounded-xl border border-[#DDE5E1] bg-white shadow-sm">
+          {loading ? (
+            <div className="divide-y divide-[#EEF2F0]">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-4 px-6 py-4">
+                  <div className="h-9 w-9 animate-pulse rounded-full bg-[#EEF2F0]" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-3 w-1/4 animate-pulse rounded bg-[#EEF2F0]" />
+                    <div className="h-3 w-1/3 animate-pulse rounded bg-[#EEF2F0]" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : filteredPatients.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
+              <IconFolder className="h-10 w-10 text-[#B7C6C0]" />
+              {patients.length === 0 ? (
+                <>
+                  <p className="text-sm font-medium text-[#16302B]">No patients yet</p>
+                  <p className="max-w-xs text-sm text-[#4B5D58]">
+                    Add the first patient to start building your records.
+                  </p>
+                  <button
+                    onClick={() => setShowForm(true)}
+                    className="mt-2 rounded-md bg-[#0F6D66] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#0B534E]"
+                  >
+                    Add patient
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium text-[#16302B]">No matches</p>
+                  <p className="max-w-xs text-sm text-[#4B5D58]">
+                    No patients match "{search}". Try a different name or number.
+                  </p>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-[#EEF2F0]">
+                <thead>
+                  <tr className="bg-[#FAFBFA]">
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                      Patient
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                      Birth date
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                      Gender
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                      Contact
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                      Address
+                    </th>
+                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#EEF2F0]">
+                  {filteredPatients.map((patient) => {
+                    const color = tabColorFor(patient.id);
+                    return (
+                      <tr key={patient.id} className="group relative hover:bg-[#FAFBFA]">
+                        <td className="relative whitespace-nowrap py-4 pl-6 pr-6">
+                          {/* folder-tab accent */}
+                          <span
+                            className="absolute inset-y-0 left-0 w-1"
+                            style={{ backgroundColor: color.tab }}
+                            aria-hidden="true"
+                          />
+                          <div className="flex items-center gap-3">
+                            <span
+                              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
+                              style={{ backgroundColor: color.tint, color: color.tab }}
+                            >
+                              {initials(patient.name)}
+                            </span>
+                            <span className="text-sm font-medium text-[#16302B]">{patient.name}</span>
+                          </div>
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-sm text-[#4B5D58]">
+                          {formatDate(patient.birthDate)}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4">
+                          <span className="inline-flex rounded-full bg-[#EEF2F0] px-2.5 py-0.5 text-xs font-medium text-[#4B5D58]">
+                            {patient.gender}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 font-['IBM_Plex_Mono',_ui-monospace,_monospace] text-sm text-[#4B5D58]">
+                          {patient.contactNumber}
+                        </td>
+                        <td className="max-w-xs truncate px-6 py-4 text-sm text-[#4B5D58]" title={patient.address}>
+                          {patient.address}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={() => handleEdit(patient)}
+                              aria-label={`Edit ${patient.name}`}
+                              className="rounded-md p-2 text-[#4B5D58] transition-colors hover:bg-[#F5EBDA] hover:text-[#B8823D] motion-safe:transition"
+                            >
+                              <IconEdit className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(patient.id)}
+                              aria-label={`Delete ${patient.name}`}
+                              className="rounded-md p-2 text-[#4B5D58] transition-colors hover:bg-[#F4E3DD] hover:text-[#A6403A] motion-safe:transition"
+                            >
+                              <IconTrash className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ---------- Centered modal (add / edit patient) ---------- */}
+      {showForm && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="patient-form-title"
+        >
+          <button
+            aria-label="Close form"
+            onClick={resetForm}
+            className="absolute inset-0 bg-[#16302B]/30 backdrop-blur-[2px] motion-safe:transition-opacity"
+          />
+          <div className="relative flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-xl bg-white shadow-xl motion-safe:animate-[popIn_0.18s_ease-out]">
+            <div className="flex items-center justify-between border-b border-[#EEF2F0] px-6 py-5">
+              <h2
+                id="patient-form-title"
+                className="font-['Fraunces',_Georgia,_serif] text-xl font-medium text-[#16302B]"
               >
-                <option value="">Select Gender</option>
-                <option value="Male">Male</option>
-                <option value="Female">Female</option>
-                <option value="Other">Other</option>
-              </select>
-              <input
-                type="tel"
-                name="contactNumber"
-                value={formData.contactNumber}
-                onChange={handleChange}
-                placeholder="Contact Number *"
-                className="w-full px-3 py-2 border rounded-md"
-                required
-              />
-              <textarea
-                name="address"
-                value={formData.address}
-                onChange={handleChange}
-                placeholder="Address *"
-                rows={3}
-                className="w-full px-3 py-2 border rounded-md"
-                required
-              />
-              <div className="flex gap-3">
-                <button type="submit" className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-                  {editing ? 'Update' : 'Create'} Patient
-                </button>
-                <button type="button" onClick={resetForm} className="flex-1 px-4 py-2 bg-gray-200 rounded-md hover:bg-gray-300">
+                {editing ? 'Edit patient' : 'Add patient'}
+              </h2>
+              <button
+                onClick={resetForm}
+                aria-label="Close"
+                className="rounded-md p-1.5 text-[#4B5D58] hover:bg-[#EEF2F0]"
+              >
+                <IconClose className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="flex flex-1 flex-col overflow-y-auto">
+              <div className="flex-1 space-y-4 px-6 py-5">
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                    Full name
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleChange}
+                    placeholder="Jane Rivera"
+                    className="w-full rounded-md border border-[#DDE5E1] px-3 py-2 text-sm focus:border-[#0F6D66] focus:outline-none focus:ring-2 focus:ring-[#0F6D66]/20"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                    Birth date
+                  </label>
+                  <input
+                    type="date"
+                    name="birthDate"
+                    value={formData.birthDate}
+                    onChange={handleChange}
+                    className="w-full rounded-md border border-[#DDE5E1] px-3 py-2 text-sm focus:border-[#0F6D66] focus:outline-none focus:ring-2 focus:ring-[#0F6D66]/20"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                    Gender
+                  </label>
+                  <select
+                    name="gender"
+                    value={formData.gender}
+                    onChange={handleChange}
+                    className="w-full rounded-md border border-[#DDE5E1] px-3 py-2 text-sm focus:border-[#0F6D66] focus:outline-none focus:ring-2 focus:ring-[#0F6D66]/20"
+                    required
+                  >
+                    <option value="">Select gender</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                    Contact number
+                  </label>
+                  <input
+                    type="tel"
+                    name="contactNumber"
+                    value={formData.contactNumber}
+                    onChange={handleChange}
+                    placeholder="+1 555 010 2938"
+                    className="w-full rounded-md border border-[#DDE5E1] px-3 py-2 text-sm focus:border-[#0F6D66] focus:outline-none focus:ring-2 focus:ring-[#0F6D66]/20"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-[#7C8D87]">
+                    Address
+                  </label>
+                  <textarea
+                    name="address"
+                    value={formData.address}
+                    onChange={handleChange}
+                    placeholder="Street, city, region"
+                    rows={3}
+                    className="w-full resize-none rounded-md border border-[#DDE5E1] px-3 py-2 text-sm focus:border-[#0F6D66] focus:outline-none focus:ring-2 focus:ring-[#0F6D66]/20"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 border-t border-[#EEF2F0] px-6 py-5">
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="flex-1 rounded-md border border-[#DDE5E1] py-2 text-sm font-medium text-[#4B5D58] transition-colors hover:bg-[#F5F7F5]"
+                >
                   Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 rounded-md bg-[#0F6D66] py-2 text-sm font-medium text-white transition-colors hover:bg-[#0B534E]"
+                >
+                  {editing ? 'Save changes' : 'Add patient'}
                 </button>
               </div>
             </form>
           </div>
-        )}
-
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          {patients.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">No patients registered yet.</div>
-          ) : (
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Birth Date</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Gender</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Contact</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Address</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {patients.map((patient) => (
-                  <tr key={patient.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{patient.name}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{new Date(patient.birthDate).toLocaleDateString()}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{patient.gender}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{patient.contactNumber}</td>
-                    <td className="px-6 py-4 text-sm max-w-xs truncate">{patient.address}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                      <button onClick={() => handleEdit(patient)} className="text-blue-600 hover:text-blue-900 mr-4">
-                        Edit
-                      </button>
-                      <button onClick={() => handleDelete(patient.id)} className="text-red-600 hover:text-red-900">
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
         </div>
-      </div>
+      )}
+
+      <style jsx global>{`
+        @keyframes popIn {
+          from {
+            opacity: 0;
+            transform: scale(0.96) translateY(8px);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+          }
+        }
+      `}</style>
     </div>
   );
 }
