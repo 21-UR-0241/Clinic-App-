@@ -160,10 +160,6 @@ export default function LoginPage() {
             </button>
           </form>
         </div>
-
-        <p className="mt-4 text-center text-xs text-[#8A9C96]">
-          Demo account — admin@clinic.com / Admin@123 (local development only)
-        </p>
       </div>
     </div>
   );
