@@ -15,3 +15,4 @@ frontend/clinic-app/.env.local
 .DS_Store
 Thumbs.db
 .vscode/
+backend/ClinicApp.API/clinicapp.db 
