@@ -13,16 +13,13 @@ interface Patient {
   address: string;
 }
 
-// Folder-tab accent colors, rotated by patient id — a nod to color-coded
-// tabs on real paper patient charts. Keeps rows scannable without
-// depending on gender/status for color meaning.
 const TAB_COLORS = [
-  { tab: '#0F6D66', tint: '#E4F1EF' }, // teal
-  { tab: '#B8823D', tint: '#F5EBDA' }, // amber
-  { tab: '#B5583F', tint: '#F4E3DD' }, // clay
-  { tab: '#3F5B70', tint: '#E1E9EE' }, // slate
-  { tab: '#6B4C6B', tint: '#EBE1EB' }, // plum
-  { tab: '#5C6B3F', tint: '#E7EBDC' }, // olive
+  { tab: '#0F6D66', tint: '#E4F1EF' }, 
+  { tab: '#B8823D', tint: '#F5EBDA' }, 
+  { tab: '#B5583F', tint: '#F4E3DD' }, 
+  { tab: '#3F5B70', tint: '#E1E9EE' }, 
+  { tab: '#6B4C6B', tint: '#EBE1EB' }, 
+  { tab: '#5C6B3F', tint: '#E7EBDC' }, 
 ];
 
 function tabColorFor(id: number) {
@@ -42,7 +39,7 @@ function formatDate(iso: string) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-// Icon components — inline SVG, no new dependency required.
+
 function IconPlus(props: React.SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" {...props}>
@@ -109,13 +106,13 @@ export default function PatientsPage() {
     address: '',
   });
 
-  // Check authentication
+ 
   useEffect(() => {
     const token = document.cookie.split('; ').find((row) => row.startsWith('token='));
     if (!token) router.push('/login');
   }, [router]);
 
-  // Load patients
+
   const loadPatients = async () => {
     try {
       const response = await api.get('/patients');
@@ -131,7 +128,7 @@ export default function PatientsPage() {
     loadPatients();
   }, []);
 
-  // Close the modal on Escape for keyboard users
+
   useEffect(() => {
     if (!showForm) return;
     const onKey = (e: KeyboardEvent) => {
@@ -141,7 +138,7 @@ export default function PatientsPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [showForm]);
 
-  // Lock background scroll while the modal is open
+
   useEffect(() => {
     if (showForm) {
       const prevOverflow = document.body.style.overflow;
@@ -226,7 +223,6 @@ export default function PatientsPage() {
 
   return (
     <div className="min-h-screen bg-[#F5F7F5] text-[#16302B]">
-      {/* ---------- Top bar ---------- */}
       <nav className="sticky top-0 z-30 border-b border-[#DDE5E1] bg-[#F5F7F5]/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-2.5">
@@ -248,7 +244,6 @@ export default function PatientsPage() {
       </nav>
 
       <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
-        {/* ---------- Page header ---------- */}
         <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="font-['Fraunces',_Georgia,_serif] text-3xl font-medium tracking-tight text-[#16302B]">
@@ -285,7 +280,6 @@ export default function PatientsPage() {
           </div>
         </div>
 
-        {/* ---------- Table / list ---------- */}
         <div className="overflow-hidden rounded-xl border border-[#DDE5E1] bg-white shadow-sm">
           {loading ? (
             <div className="divide-y divide-[#EEF2F0]">
@@ -413,7 +407,6 @@ export default function PatientsPage() {
         </div>
       </div>
 
-      {/* ---------- Centered modal (add / edit patient) ---------- */}
       {showForm && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center p-4"

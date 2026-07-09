@@ -83,7 +83,6 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#F5F7F5] px-4 text-[#16302B]">
       <div className="w-full max-w-md">
-        {/* Brand mark */}
         <div className="mb-8 flex flex-col items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-[#0F6D66] text-lg font-semibold text-white">
             +
@@ -96,7 +95,6 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Card */}
         <div className="rounded-xl border border-[#DDE5E1] bg-white p-8 shadow-sm">
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <div>

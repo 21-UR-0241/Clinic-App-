@@ -12,13 +12,11 @@ using BCrypt.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ✅ CORRECT ORDER: Add user secrets FIRST, then read configuration
 if (builder.Environment.IsDevelopment())
 {
     builder.Configuration.AddUserSecrets<Program>();
 }
 
-// ✅ NOW read the secret (after user secrets are loaded)
 var secret = builder.Configuration["JwtSettings:Secret"];
 if (string.IsNullOrEmpty(secret))
 {
@@ -28,7 +26,6 @@ if (string.IsNullOrEmpty(secret))
         "  or set environment variable JwtSettings__Secret");
 }
 
-// Add services
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -89,7 +86,6 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Ensure database
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -106,7 +102,6 @@ app.UseAuthorization();
 
 // ==================== API ENDPOINTS ====================
 
-// Auth Endpoint
 app.MapPost("/api/auth/login", async (LoginDto login, AppDbContext db, IConfiguration config) =>
 {
     var user = await db.Users.FirstOrDefaultAsync(u => u.Email == login.Email);
@@ -152,7 +147,6 @@ app.MapPost("/api/auth/logout", async (HttpContext context, AppDbContext db) =>
 
 app.MapPost("/api/auth/refresh", async (RefreshDto request, AppDbContext db, IConfiguration config) =>
 {
-    // Find user by refresh token hash
     var users = await db.Users.ToListAsync();
     var user = users.FirstOrDefault(u => u.RefreshTokenHash != null && BCrypt.Net.BCrypt.Verify(request.RefreshToken, u.RefreshTokenHash));
 
@@ -175,7 +169,6 @@ app.MapPost("/api/auth/refresh", async (RefreshDto request, AppDbContext db, ICo
     var newToken = tokenHandler.CreateToken(tokenDescriptor);
     var newRefreshToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
-    // Rotate the refresh token (hash it before storing)
     user.RefreshTokenHash = BCrypt.Net.BCrypt.HashPassword(newRefreshToken);
     user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(7);
     await db.SaveChangesAsync();
@@ -188,7 +181,6 @@ app.MapPost("/api/auth/refresh", async (RefreshDto request, AppDbContext db, ICo
     });
 });
 
-// Patient Endpoints
 app.MapGet("/api/patients", async (AppDbContext db) =>
 {
     var patients = await db.Patients
@@ -222,7 +214,6 @@ app.MapGet("/api/patients/{id}", async (int id, AppDbContext db) =>
 
 app.MapPost("/api/patients", async (PatientDto patientDto, AppDbContext db) =>
 {
-    // Server-side validation
     if (string.IsNullOrWhiteSpace(patientDto.Name) || patientDto.Name.Length < 2)
         return Results.BadRequest(new { error = "Name is required and must be at least 2 characters" });
     
@@ -265,7 +256,6 @@ app.MapPut("/api/patients/{id}", async (int id, PatientDto patientDto, AppDbCont
     var patient = await db.Patients.FindAsync(id);
     if (patient == null) return Results.NotFound();
     
-    // Server-side validation
     if (string.IsNullOrWhiteSpace(patientDto.Name) || patientDto.Name.Length < 2)
         return Results.BadRequest(new { error = "Name is required and must be at least 2 characters" });
     
@@ -319,7 +309,7 @@ public class User
     public int Id { get; set; }
     public string Email { get; set; } = string.Empty;
     public string PasswordHash { get; set; } = string.Empty;
-    public string? RefreshTokenHash { get; set; }  // Now hashed instead of plaintext
+    public string? RefreshTokenHash { get; set; }
     public DateTime? RefreshTokenExpiryTime { get; set; }
 }
 
@@ -344,7 +334,6 @@ public class LoginDto { public string Email { get; set; } = string.Empty; public
 public class RefreshDto { public string Token { get; set; } = string.Empty; public string RefreshToken { get; set; } = string.Empty; }
 public class AuthResponse { public string Token { get; set; } = string.Empty; public string RefreshToken { get; set; } = string.Empty; public string Email { get; set; } = string.Empty; }
 
-// DTO with validation attributes
 public class PatientDto 
 { 
     public int Id { get; set; } 
