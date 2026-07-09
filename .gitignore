@@ -1,0 +1,17 @@
+# Backend .NET
+backend/ClinicApp.API/bin/
+backend/ClinicApp.API/obj/
+
+# Frontend Next.js
+frontend/clinic-app/node_modules/
+frontend/clinic-app/.next/
+frontend/clinic-app/out/
+
+# Secrets
+frontend/clinic-app/.env
+frontend/clinic-app/.env.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
